@@ -39,10 +39,22 @@ app = Flask(__name__)
 def home():
     '''List all available api routes here'''
     return(
-        f'Avaliable Routes: <br/>'
+        f'<H1>Avaliable Routes:</H1><br/>'
+        f'<br/>'
+        f'<u>Precipitation Data:</u><br/>'
         f'/api/v1.0/precipitation<br/>'
+        f'<br/>'
+        f'<u>Station List:</u><br/>'
         f'/api/v1.0/stations<br/>'
+        f'<br/>'
+        f'<u>Temperature Observation Data:</u><br/>'
         f'/api/v1.0/tobs<br/>'
+        f'<br/>'
+        f'<u>Tmin, Tavg, Tmax from Start Date (%Y-%m-%d):</u><br/>'
+        f'/api/v1.0/2016-08-23<br/>'
+        f'<br/>'
+        f'<u>Tmin, Tavg, Tmax from Start Date and End Date (%Y-%m-%d):</u><br/>'
+        f'/api/v1.0/2016-08-23/2016-09-23<br/>'
     )
 
 @app.route('/api/v1.0/precipitation')
@@ -52,7 +64,6 @@ def precipitation():
     
     Return the JSON representation of your dictionary.
     '''
-
     # Query date and precipitation data
     results = session.query(Measurement.date, Measurement.prcp).order_by(Measurement.date.desc()).all()
 
@@ -85,16 +96,110 @@ def tobs():
 
     Return a JSON list of Temperature Observations (tobs) for the previous year.
     '''
-    last_date = session.query(Measurement.date).order_by(Measurement.date.desc()).first()[0]
+    # Find last Date
+    max_date = session.query(Measurement.date).order_by(Measurement.date.desc()).first()[0]
 
-    last_date = dt.datetime.strptime(last_date, '%Y-%m-%d')
+    # Convert max_date to date time
+    last_dt = dt.datetime.strptime(max_date, '%Y-%m-%d')
 
-    year_ago = last_date - dt.timedelta(days=365)
+    year_ago = last_dt - dt.timedelta(days=365)
 
-    last_year_tobs = session.query(Measurement.date, Measurement.tobs).\
-                    filter(func.strftime('%Y-%m-%d', Measurement.date) >= year_ago).all()
+    results = session.query(Measurement.date, Measurement.tobs).filter(func.strftime('%Y-%m-%d', Measurement.date) >= year_ago).all()
+
+    last_year_tobs = []
+
+    for date, tobs in results:
+        tobs_dct = {}
+        tobs_dct[date] = tobs
+        last_year_tobs.append(tobs_dct)
 
     return jsonify(last_year_tobs)
+
+# Define function to calculate Tmin, Tmax, Tavg
+def temp_dates(start, end=None):
+    '''
+    Takes a start date and an optional end date in "%Y-%m-%d" format.
+
+    Takes the given dates, and calculates the Tmin, Tavg, and Tmax wiithin the date range from the Hawaii.sqlliite database.
+
+    Returns a dictionary containing the calculated temperature values.
+    '''
+    # Convert start date string to datetime
+    start_dt = dt.datetime.strptime(start, '%Y-%m-%d')
+
+    # Convert end date to datetime if not None
+    if end != None:
+        end_dt = dt.datetime.strptime(end, '%Y-%m-%d')
+
+    # Define selection
+    sel = [func.min(Measurement.tobs), func.avg(Measurement.tobs), func.max(Measurement.tobs)]
+
+    # Query within date range. If there's an end date, use it
+    if end != None:
+        results = session.query(*sel).filter(func.strftime('%Y-%m-%d', Measurement.date) >= start_dt).filter(func.strftime(Measurement.date) <= end_dt).all()
+    # If no end date, just use start date
+    else:
+        results = session.query(*sel).filter(func.strftime('%Y-%m-%d', Measurement.date) >= start_dt).all()
+        
+     # convert results to list
+    temperatures = list(np.ravel(results))
+
+    # Define keys for JSON dictionary
+    temp_keys = ['Tmin','Tavg','Tmax']
+
+    # Create a dictionary using the keys and the temperatures data
+
+    temp_dict = dict(zip(temp_keys, temperatures))
+
+    return temp_dict
+
+@app.route('/api/v1.0/<start>')
+def tobs_start(start):
+    '''
+    When given the start only, calculate `TMIN`, `TAVG`, and `TMAX` for all dates greater than and equal to the start date.
+    '''
+    # Find Last date
+    max_date = session.query(func.max(Measurement.date)).scalar()
+
+    # Check if date is after the latest date in DB; if it is, return an error
+    if start > max_date:
+        return jsonify({"error": f"{start} out of range"}), 404
+
+    # Call temp dates function to get temp dict. Return error message if date is in wrong format.
+    try:
+        temp_data = temp_dates(start)
+    except ValueError:
+                return jsonify({"error": f"{start} does not match format '%Y-%m-%d'"}), 404
+
+    return jsonify(temp_data)
+
+@app.route('/api/v1.0/<start>/<end>')
+def tobs_start_end(start, end):
+    '''
+    When given the start and the end date, calculate the `TMIN`, `TAVG`, and `TMAX` for dates between the start and end date inclusive.
+    '''
+    # Find last Date
+    max_date = session.query(func.max(Measurement.date)).scalar()
+
+    # Find First Date
+    min_date = session.query(func.min(Measurement.date)).scalar()
+    
+    # Check if start date is after the latest date in DB; if it is, return an error
+    if start > max_date:
+        return jsonify({"error": f"{start} out of range"}), 404
+
+    # Check if end date is before the earlist date in DB; if it is, return an error
+    if end < min_date:
+        return jsonify({"error": f"{end} out of range"}), 404
+
+    # Call temp dates function to get temp dict. Return error message if date is in wrong format.
+    try:
+        temp_data = temp_dates(start, end)
+    except ValueError:
+                return jsonify({"error": f"Start or End date do not match format '%Y-%m-%d'"}), 404
+
+    return jsonify(temp_data)
+
 
 if __name__ == '__main__':
     app.run(debug=True)
